@@ -34,11 +34,9 @@ typedef struct free_list {
 } free_list;
 
 typedef struct node {
-    free_list *next;
-    free_list *prev;
+    struct node *next, *prev;
     struct node *left, *right;
     int diff;
-    size_t size;
 } node;
 
 

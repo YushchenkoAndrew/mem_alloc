@@ -3,8 +3,10 @@
 void *last_address = NULL;
 
 node *avl_root = NULL;
+free_list *free_list_start = NULL;
 
 #define ALIGN(x, align) (((x) + (align) - 1) & -(align))
+#define MAX(x, y) ((x > y) ? (x) : (y))
 #define PAGE_SIZE 4096
 #define PAGES(size) (size / PAGE_SIZE + (size % PAGE_SIZE ? 1 : 0))
 
@@ -105,27 +107,18 @@ static inline int balance(node **rp) {
 
 /* Initialize Node structure */
 static int insert_leaf(size_t size, node **rp, void *block) {
-    // free_list *ptr = (free_list *)block;
-    // *ptr = (free_list){ .next = NULL, .prev = NULL };
-
     node *a = (*rp = (node *)block);
-    // *a = (node){ .left = block, .right = NULL, .list = ptr, .diff = 0, .size = size };
-    *a = (node){ .next = NULL, .prev = NULL, .left = NULL, .right = NULL, .diff = 0, .size = size };
+    *a = (node){ .next = NULL, .prev = NULL, .left = NULL, .right = NULL, .diff = 0 };
     return 1;
 }
 
 /* Expand Free List with the same size */
 static int insert_list(node *a, void *block) {
-    // free_list *ptr = (free_list *)block;
-    // *ptr = (free_list){ .next = NULL, .prev = NULL };
     node *ptr = (node *)block;
-    *ptr = (node){ .left = NULL, .right = NULL, .next = NULL, .prev = NULL, .diff = 0, .size = a->size };
+    *ptr = (node){ .next = NULL, .prev = NULL, .left = NULL, .right = NULL, .diff = 0 };
 
     ptr->prev = a;
     a->next = ptr;
-    // ptr->next = a;
-    // a->prev = ptr;
-    // *((free_list *)a) = *ptr;
     return 0;
 }
 
@@ -133,12 +126,14 @@ static int avl_insert(size_t size, node **rp, void *block) {
     node *a = *rp;
     if (a == NULL)
         return insert_leaf(size, rp, block);
-    if (size == a->size)
+    // if (size == a->size)
+    if (size == getSize(a))
         return insert_list(a, block);
-    if (size > a->size)
+    // if (size > a->size)
+    if (size > getSize(a))
         if (avl_insert(size, &a->right, block) && (++a->diff) == 1)
             return 1;
-    if (size < a->size)
+    if (size < getSize(a))
         if (avl_insert(size, &a->left, block) && (--a->diff) == -1)
             return 1;
     if (a->diff != 0)
@@ -165,27 +160,26 @@ static int unlink_left(node **rp, node **lp) {
 static int remove_root(node **rp, void *block) {
     int delta;
     node *a = *rp, *b;
-    // free_list *free_block = (free_list *)block;
-    node *next = a->next;
-    node *prev = a->prev;
-    if (prev != NULL || next != NULL) {
+    if (a->prev != NULL || a->next != NULL) {
+        node *next = ((node *)block)->next;
+        node *prev = ((node *)block)->prev;
         if (prev != NULL) {
-            node *prev_prev = prev->prev;
-            *prev = *a;
-            prev->prev = prev_prev;
-            *rp = prev;
-            // **rp = *prev;
+            if ((char *)a == (char *)block) {
+                node *prev_ = prev->prev;
+                *prev = *a;
+                prev->prev = prev_;
+                *rp = prev;
+            }
+            prev->next = next;
         }
         if (next != NULL) {
-            node *next_next = next->next;
-            *next = *a;
-            next->next = next_next;
-
-            // TODO: CHECK HERE
-            *rp = next;
-            // **rp = *next;
-
-            // *((node *)next) = (node){ .next = next->next, .prev = a->prev, .left = NULL, .right = NULL, .diff = 0, .size = size };
+            if ((char *)a == (char *)block) {
+                node *next_ = next->next;
+                *next = *a;
+                next->next = next_;
+                *rp = next;
+            }
+            next->prev = prev;
         }
         return 0;
     }
@@ -212,12 +206,12 @@ static int avl_remove(size_t size, node **rp, void *block) {
     node *a = *rp;
     if (a == NULL)
         return 0;
-    if (size == a->size)
+    if (size == getSize(a))
         return remove_root(rp, block);
-    if (size > a->size)
+    if (size > getSize(a))
         if (avl_remove(size, &a->right, block) && (--a->diff) == 0)
             return 1;
-    if (size < a->size)
+    if (size < getSize(a))
         if (avl_remove(size, &a->left, block) && (++a->diff) == 0)
             return 1;
     if (a->diff != 0)
@@ -225,25 +219,88 @@ static int avl_remove(size_t size, node **rp, void *block) {
     return 0;
 }
 
+void avl_show(node *a) {
+    if (a == NULL)
+        return 0;
+
+    avl_show(a->left);
+
+    printf("|%7s - %15p|%7s - %15p|%7s - %15p|%7s - %7zu|\n", "addr", a, "left", a->left, "right",
+                                     a->right, "size", getSize(a));
+    avl_show(a->right);
+}
+
 
 void remove_from_free_list(void *ptr) {
     // Mark block as used.
     setFree(ptr, false);
-    avl_remove(((Header *)ptr)->size, &avl_root, add_offset(ptr));
+    if (((Header *)ptr)->size >= NODE_SIZE) {
+        avl_remove(((Header *)ptr)->size, &avl_root, add_offset(ptr));
+    } else {
+        free_list *free_block = (free_list *)add_offset(ptr);
+        free_list *next = free_block->next;
+        free_list *prev = free_block->prev;
+        if (prev == NULL) {
+            if (next == NULL) {
+                // free_block is the only block in the free list.
+                free_list_start = NULL;
+            } else {
+                // Remove first element in the free list.
+                free_list_start = next;
+                next->prev = NULL;
+            }
+        } else {
+            if (next == NULL) {
+                // Remove last element of the free list.
+                prev->next = NULL;
+            } else {
+                // Remove element in the middle.
+                prev->next = next;
+                next->prev = prev;
+            }
+        }
+    }
 }
 
 void append_to_free_list(void *ptr) {
     // Mark block as free
     setFree(ptr, true);
 
-    // node *avl_ptr = (node *)add_offset((char *)ptr);
-    // avl_insert(((Header *)ptr)->size, &avl_root, avl_ptr);
-    avl_insert(((Header *)ptr)->size, &avl_root, add_offset(ptr));
+    if (((Header *)ptr)->size >= NODE_SIZE) {
+        avl_insert(((Header *)ptr)->size, &avl_root, add_offset(ptr));
+    } else {
+        free_list *new_ptr = (free_list *)add_offset(ptr);
+        *new_ptr = (free_list){ .next = NULL, .prev = NULL };
+
+        if (free_list_start) {
+            // Insert in the beginning.
+            new_ptr->next = free_list_start;
+            free_list_start->prev = new_ptr;
+            free_list_start = new_ptr;
+        } else {
+            // No elements in the free list
+            free_list_start = new_ptr;
+        }
+    }
 }
 
 // Find a free block that is large enough to store 'size' bytes.
 // Returns NULL if not found.
+void *find_small_free_block(size_t size) {
+    free_list *current = free_list_start;
+    while (current) {
+        if (getSize(current) >= size) {
+            // Return a pointer to the free block.
+            return current;
+        }
+        current = current->next;
+    }
+    return NULL;
+}
+
 void *find_free_block(size_t size) {
+    if (size < NODE_SIZE)
+        return find_small_free_block(size);
     node *curr = avl_root;
     while (curr) {
         size_t curr_size = getSize(curr);
@@ -268,12 +325,11 @@ void split(void *start_ptr,  size_t requested) {
     // Size that was left after allocating memory.
     // Needs to be large enough to store another block (min size is needed in order
     // to store free list element there after it is freed).
-    if (curr_size + NODE_SIZE <= requested) {
+    if ((curr_size <= requested) || ((curr_size - requested) <= NODE_SIZE)) {
         return;
     }
 
     size_t block_size = curr_size - requested;
-
     void *new_block_ptr = (void *)((char *)start_ptr + requested);
 
     // Change size of the prev (recently allocated) block.
@@ -328,6 +384,7 @@ void *mem_alloc(size_t size) {
         *((Footer *)getFooter(header_ptr)) = footer;
 
         // Split new region.
+        // split(header_ptr, MAX(required_size, NODE_SIZE));
         split(header_ptr, required_size);
         // Update last_address for the next allocation.
         last_address = (void *)((char *)header_ptr + bytes);
@@ -339,6 +396,7 @@ void *mem_alloc(size_t size) {
     void *address = remove_offset(free_block);
     // Split the block into two, where the second is free.
     remove_from_free_list(address);
+    // split(address, MAX(required_size, NODE_SIZE));
     split(address, required_size);
     return add_offset(address);
 }
@@ -351,20 +409,24 @@ void coalesce(void *ptr) {
         Header *prev_header = (Header *)((char *)prev_footer - prev_footer->size - HEADER_SIZE);
         // Merge with previous block.
         remove_from_free_list(current_header);
+        remove_from_free_list(prev_header);
         // Add size of prev block to the size of current block
         prev_header->size += current_header->size + META_SIZE;
         prev_header->has_next = current_header->has_next;
         ((Footer *)getFooter(prev_header))->size = prev_header->size;
+        append_to_free_list(prev_header);
         current_header = prev_header;
     }
     void *next = (void *)((char *)current_header + current_header->size + META_SIZE);
     if (current_header->has_next && ((Header *)next)->free) {
         // merge with next block.
         remove_from_free_list(next);
+        remove_from_free_list(current_header);
         // Add size of next block to the size of current block.
         current_header->size += ((Header *)next)->size + META_SIZE;
         current_header->has_next = ((Header *)next)->has_next;
         ((Footer *)getFooter(current_header))->size = current_header->size;
+        append_to_free_list(current_header);
     }
 }
 
@@ -426,7 +488,7 @@ void *mem_realloc(void *ptr, size_t size) {
     // Next block exists and is free.
     void *next = (void *)((char *)current_header + current_header->size + META_SIZE);
     if (current_header->has_next && ((Header *)next)->free) {
-        int available_size = current_size + ((Header *)next)->size + META_SIZE;
+        size_t available_size = current_size + ((Header *)next)->size + META_SIZE;
         // Size is enough.
         if (available_size >= required_size) {
             remove_from_free_list(next);
