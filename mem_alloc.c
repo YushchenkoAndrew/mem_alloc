@@ -166,7 +166,7 @@ static int remove_root(node **rp, void *block) {
         if (prev != NULL) {
             if ((char *)a == (char *)block) {
                 node *prev_ = prev->prev;
-                *prev = *a;
+                *prev = **rp;
                 prev->prev = prev_;
                 *rp = prev;
             }
@@ -175,7 +175,7 @@ static int remove_root(node **rp, void *block) {
         if (next != NULL) {
             if ((char *)a == (char *)block) {
                 node *next_ = next->next;
-                *next = *a;
+                *next = **rp;
                 next->next = next_;
                 *rp = next;
             }
@@ -221,7 +221,7 @@ static int avl_remove(size_t size, node **rp, void *block) {
 
 void avl_show(node *a) {
     if (a == NULL)
-        return 0;
+        return;
 
     avl_show(a->left);
 
@@ -234,7 +234,7 @@ void avl_show(node *a) {
 void remove_from_free_list(void *ptr) {
     // Mark block as used.
     setFree(ptr, false);
-    if (((Header *)ptr)->size >= NODE_SIZE) {
+    if (((Header *)ptr)->size > NODE_SIZE) {
         avl_remove(((Header *)ptr)->size, &avl_root, add_offset(ptr));
     } else {
         free_list *free_block = (free_list *)add_offset(ptr);
@@ -266,7 +266,7 @@ void append_to_free_list(void *ptr) {
     // Mark block as free
     setFree(ptr, true);
 
-    if (((Header *)ptr)->size >= NODE_SIZE) {
+    if (((Header *)ptr)->size > NODE_SIZE) {
         avl_insert(((Header *)ptr)->size, &avl_root, add_offset(ptr));
     } else {
         free_list *new_ptr = (free_list *)add_offset(ptr);
@@ -360,7 +360,6 @@ void *mem_alloc(size_t size) {
 
     // Try to find a block big enough in already allocated memory.
     void *free_block = find_free_block(required_size);
-    // void *free_block = find_free_block(required_size, avl_root);
     if (free_block == NULL) {
        // Round to a multiple of the page size
         size_t bytes = ALIGN(required_size + NODE_SIZE, PAGE_SIZE);
